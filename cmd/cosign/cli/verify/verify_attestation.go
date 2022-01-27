@@ -59,6 +59,7 @@ type VerifyAttestationCommand struct {
 	PredicateType  string
 	Policies       []string
 	LocalImage     bool
+	DecodePayload  bool
 }
 
 // Exec runs the verification command
@@ -162,22 +163,58 @@ func (c *VerifyAttestationCommand) Exec(ctx context.Context, images []string) (e
 		}
 
 		var validationErrors []error
-		for _, vp := range verified {
-			var payloadData map[string]interface{}
+		_, validationErrors, err := DecodeAttestationPayload(verified, c.PredicateType, cuePolicies, regoPolicies, validationErrors)
+		if err != nil {
+			return fmt.Errorf("error Decoding and validating attestation payloads %v", err)
+		}
 
-			p, err := vp.Payload()
-			if err != nil {
-				return errors.Wrap(err, "could not get payload")
+		if len(validationErrors) > 0 {
+			fmt.Fprintf(os.Stderr, "There are %d number of errors occurred during the validation:\n", len(validationErrors))
+			for _, v := range validationErrors {
+				_, _ = fmt.Fprintf(os.Stderr, "- %v\n", v)
 			}
+			return fmt.Errorf("%d validation errors occurred", len(validationErrors))
+		}
 
-			err = json.Unmarshal(p, &payloadData)
+		// TODO: add CUE validation report to `PrintVerificationHeader`.
+		PrintVerificationHeader(imageRef, co, bundleVerified)
+		_ = bundleVerified
+		if c.DecodePayload {
+			decodedPayload, _, err := DecodeAttestationPayload(verified, "", []string{}, []string{}, []error{})
 			if err != nil {
-				return errors.Wrap(err, "unmarshal payload data")
+				return fmt.Errorf("error Decoding Attestation Payload: %v", err)
 			}
+			PrintDecodedAttestation(decodedPayload)
+		} else {
+			// The attestations are always JSON, so use the raw "text" mode for outputting them instead of conversion
+			PrintVerification(imageRef, verified, "text")
+		}
 
-			predicateURI, ok := options.PredicateTypeMap[c.PredicateType]
+	}
+
+	return nil
+}
+
+func DecodeAttestationPayload(verified []oci.Signature, predicateType string, cuePolicies, regoPolicies []string, validationErrors []error) ([]byte, []error, error) {
+	var decodedPayload []byte
+
+	for _, vp := range verified {
+		var payloadData map[string]interface{}
+
+		p, err := vp.Payload()
+		if err != nil {
+			return nil, nil, errors.Wrap(err, "could not get payload")
+		}
+
+		err = json.Unmarshal(p, &payloadData)
+		if err != nil {
+			return nil, nil, errors.Wrap(err, "unmarshal payload data")
+		}
+
+		if predicateType != "" {
+			predicateURI, ok := options.PredicateTypeMap[predicateType]
 			if !ok {
-				return fmt.Errorf("invalid predicate type: %s", c.PredicateType)
+				return nil, nil, fmt.Errorf("invalid predicate type: %s", predicateType)
 			}
 
 			// sanity checks
@@ -188,56 +225,57 @@ func (c *VerifyAttestationCommand) Exec(ctx context.Context, images []string) (e
 					continue
 				}
 			} else {
-				return fmt.Errorf("could not find 'payloadType' in payload data")
+				return nil, nil, fmt.Errorf("could not find 'payloadType' in payload data")
 			}
+		}
 
-			var decodedPayload []byte
-			if val, ok := payloadData["payload"]; ok {
-				decodedPayload, err = base64.StdEncoding.DecodeString(val.(string))
-				if err != nil {
-					return fmt.Errorf("could not decode 'payload': %w", err)
-				}
-			} else {
-				return fmt.Errorf("could not find 'payload' in payload data")
+		if val, ok := payloadData["payload"]; ok {
+			decodedPayload, err = base64.StdEncoding.DecodeString(val.(string))
+			if err != nil {
+				return nil, nil, fmt.Errorf("could not decode 'payload': %w", err)
 			}
+		} else {
+			return nil, nil, fmt.Errorf("could not find 'payload' in payload data")
+		}
 
+		if predicateType != "" {
 			var payload []byte
-			switch c.PredicateType {
+			switch predicateType {
 			case options.PredicateCustom:
 				var cosignStatement in_toto.Statement
 				if err := json.Unmarshal(decodedPayload, &cosignStatement); err != nil {
-					return fmt.Errorf("unmarshal CosignStatement: %w", err)
+					return nil, nil, fmt.Errorf("unmarshal CosignStatement: %w", err)
 				}
 				payload, err = json.Marshal(cosignStatement)
 				if err != nil {
-					return fmt.Errorf("error when generating CosignStatement: %w", err)
+					return nil, nil, fmt.Errorf("error when generating CosignStatement: %w", err)
 				}
 			case options.PredicateLink:
 				var linkStatement in_toto.LinkStatement
 				if err := json.Unmarshal(decodedPayload, &linkStatement); err != nil {
-					return fmt.Errorf("unmarshal LinkStatement: %w", err)
+					return nil, nil, fmt.Errorf("unmarshal LinkStatement: %w", err)
 				}
 				payload, err = json.Marshal(linkStatement)
 				if err != nil {
-					return fmt.Errorf("error when generating LinkStatement: %w", err)
+					return nil, nil, fmt.Errorf("error when generating LinkStatement: %w", err)
 				}
 			case options.PredicateSLSA:
 				var slsaProvenanceStatement in_toto.ProvenanceStatement
 				if err := json.Unmarshal(decodedPayload, &slsaProvenanceStatement); err != nil {
-					return fmt.Errorf("unmarshal ProvenanceStatement: %w", err)
+					return nil, nil, fmt.Errorf("unmarshal ProvenanceStatement: %w", err)
 				}
 				payload, err = json.Marshal(slsaProvenanceStatement)
 				if err != nil {
-					return fmt.Errorf("error when generating ProvenanceStatement: %w", err)
+					return nil, nil, fmt.Errorf("error when generating ProvenanceStatement: %w", err)
 				}
 			case options.PredicateSPDX:
 				var spdxStatement in_toto.SPDXStatement
 				if err := json.Unmarshal(decodedPayload, &spdxStatement); err != nil {
-					return fmt.Errorf("unmarshal SPDXStatement: %w", err)
+					return nil, nil, fmt.Errorf("unmarshal SPDXStatement: %w", err)
 				}
 				payload, err = json.Marshal(spdxStatement)
 				if err != nil {
-					return fmt.Errorf("error when generating SPDXStatement: %w", err)
+					return nil, nil, fmt.Errorf("error when generating SPDXStatement: %w", err)
 				}
 			}
 
@@ -256,21 +294,24 @@ func (c *VerifyAttestationCommand) Exec(ctx context.Context, images []string) (e
 					validationErrors = append(validationErrors, regoValidationErrs...)
 				}
 			}
-		}
 
-		if len(validationErrors) > 0 {
-			fmt.Fprintf(os.Stderr, "There are %d number of errors occurred during the validation:\n", len(validationErrors))
-			for _, v := range validationErrors {
-				_, _ = fmt.Fprintf(os.Stderr, "- %v\n", v)
-			}
-			return fmt.Errorf("%d validation errors occurred", len(validationErrors))
+			return nil, validationErrors, nil
 		}
-
-		// TODO: add CUE validation report to `PrintVerificationHeader`.
-		PrintVerificationHeader(imageRef, co, bundleVerified)
-		// The attestations are always JSON, so use the raw "text" mode for outputting them instead of conversion
-		PrintVerification(imageRef, verified, "text")
 	}
 
-	return nil
+	return decodedPayload, nil, nil
+}
+
+func PrintDecodedAttestation(decodedPayload []byte) {
+
+	var attestation map[string]interface{}
+	json.Unmarshal(decodedPayload, &attestation)
+
+	attestationJSON, err := json.Marshal(attestation)
+	if err != nil {
+		fmt.Printf("Error marshaling attestation to json: %v", err)
+		return
+	}
+
+	fmt.Println(string(attestationJSON))
 }

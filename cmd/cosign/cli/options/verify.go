@@ -72,13 +72,14 @@ type VerifyAttestationOptions struct {
 	CheckClaims bool
 	Output      string
 
-	SecurityKey SecurityKeyOptions
-	Rekor       RekorOptions
-	CertVerify  CertVerifyOptions
-	Registry    RegistryOptions
-	Predicate   PredicateRemoteOptions
-	Policies    []string
-	LocalImage  bool
+	SecurityKey   SecurityKeyOptions
+	Rekor         RekorOptions
+	CertVerify    CertVerifyOptions
+	Registry      RegistryOptions
+	Predicate     PredicateRemoteOptions
+	Policies      []string
+	LocalImage    bool
+	DecodePayload bool
 }
 
 var _ Interface = (*VerifyAttestationOptions)(nil)
@@ -105,6 +106,9 @@ func (o *VerifyAttestationOptions) AddFlags(cmd *cobra.Command) {
 
 	cmd.Flags().BoolVar(&o.LocalImage, "local-image", false,
 		"whether the specified image is a path to an image saved locally via 'cosign save'")
+
+	cmd.Flags().BoolVar(&o.DecodePayload, "decode-payload", false,
+		"whether or not to decode the payload within the attestation to view its contents")
 }
 
 // VerifyBlobOptions is the top level wrapper for the `verify blob` command.

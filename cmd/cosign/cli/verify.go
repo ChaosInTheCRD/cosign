@@ -171,6 +171,7 @@ against the transparency log.`,
 				PredicateType:   o.Predicate.Type,
 				Policies:        o.Policies,
 				LocalImage:      o.LocalImage,
+				DecodePayload:   o.DecodePayload,
 			}
 			return v.Exec(cmd.Context(), args)
 		},
